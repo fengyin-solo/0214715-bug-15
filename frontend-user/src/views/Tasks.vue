@@ -19,7 +19,7 @@
         <div class="stat-item completed">
           <span class="stat-icon">✅</span>
           <div class="stat-text">
-          <span class="stat-value">{{ completedCount }}</span>
+          <span class="stat-value">{{ historyCount }}</span>
           <span class="stat-label">已完成</span>
           </div>
         </div>
@@ -39,11 +39,11 @@
         </button>
         <button
           class="tab-btn"
-          :class="{ active: activeTab === 'completed' }"
-          @click="switchTab('completed')"
+          :class="{ active: activeTab === 'history' }"
+          @click="switchTab('history')"
         >
           <span class="tab-label">已完成</span>
-          <span v-if="completedCount > 0" class="tab-badge">{{ completedCount }}</span>
+          <span v-if="historyCount > 0" class="tab-badge">{{ historyCount }}</span>
         </button>
       </div>
 
@@ -116,8 +116,10 @@
             :key="action.key"
             class="action-btn"
             :class="action.type"
+            :disabled="task.processing"
             @click="handleAction(task, action)"
           >
+            <span v-if="task.processing" class="btn-spinner"></span>
             {{ action.label }}
           </button>
         </div>
@@ -127,7 +129,7 @@
       <div v-else class="empty-state">
       <div class="empty-icon">📋</div>
       <h3>暂无{{ activeTab === 'pending' ? '待处理' : '已完成' }}任务</h3>
-      <p>{{ activeType === 'all' ? '当前没有' : getTypeText }}记录</p>
+      <p>{{ activeType === 'all' ? '当前没有' + (activeTab === 'pending' ? '待处理' : '已完成') + '任务' : '暂无' + getTypeText + '记录' }}</p>
       </div>
     </div>
 
@@ -139,26 +141,29 @@
       :subtitle="paySubtitle"
       size="small"
       confirm-text="确认支付"
-      :loading="payLoading"
+      :loading="actionLoading"
       @confirm="confirmPay"
+      @cancel="onActionModalClosed"
+      @update:model-value="onPayModalToggle"
     >
-      <div class="pay-info">
+      <div v-if="selectedTask" class="pay-info">
         <div class="pay-item">
           <span class="pay-label">订单编号</span>
-          <span class="pay-value">{{ selectedTask?.id }}</span>
+          <span class="pay-value">{{ selectedTask.id }}</span>
         </div>
         <div class="pay-item">
           <span class="pay-label">项目名称</span>
-          <span class="pay-value">{{ selectedTask?.title }}</span>
+          <span class="pay-value">{{ selectedTask.title }}</span>
         </div>
         <div class="pay-item">
           <span class="pay-label">项目类型</span>
-          <span class="pay-value">{{ selectedTask?.typeName }}</span>
+          <span class="pay-value">{{ selectedTask.typeName }}</span>
         </div>
         <div class="pay-total">
           <span class="pay-label">应付金额</span>
-          <span class="pay-amount">¥{{ selectedTask?.amount?.toLocaleString() }}</span>
+          <span class="pay-amount">¥{{ formatAmount(selectedTask.amount) }}</span>
         </div>
+        <p v-if="actionError" class="action-error">{{ actionError }}</p>
       </div>
     </Modal>
 
@@ -167,17 +172,51 @@
       icon="warning"
       icon-type="warning"
       title="确认取消"
-      subtitle="确定要取消此任务吗？"
+      :subtitle="cancelSubtitle"
       size="small"
       confirm-text="确认取消"
       confirm-type="danger"
-      :loading="cancelLoading"
+      :loading="actionLoading"
       @confirm="confirmCancel"
-    />
+      @cancel="onActionModalClosed"
+      @update:model-value="onCancelModalToggle"
+    >
+      <p v-if="actionError" class="action-error">{{ actionError }}</p>
+    </Modal>
+
+    <Modal
+      v-model="showConfirmModal"
+      icon="📦"
+      icon-type="info"
+      title="确认收货"
+      subtitle="请确认您已收到商品"
+      size="small"
+      confirm-text="确认收货"
+      :loading="actionLoading"
+      @confirm="confirmReceive"
+      @cancel="onActionModalClosed"
+      @update:model-value="onConfirmModalToggle"
+    >
+      <div v-if="selectedTask" class="pay-info">
+        <div class="pay-item">
+          <span class="pay-label">订单编号</span>
+          <span class="pay-value">{{ selectedTask.extra?.orderNo || selectedTask.id }}</span>
+        </div>
+        <div class="pay-item">
+          <span class="pay-label">商品</span>
+          <span class="pay-value">{{ selectedTask.title }}</span>
+        </div>
+        <div class="pay-total">
+          <span class="pay-label">订单金额</span>
+          <span class="pay-amount">¥{{ formatAmount(selectedTask.amount) }}</span>
+        </div>
+        <p v-if="actionError" class="action-error">{{ actionError }}</p>
+      </div>
+    </Modal>
 
     <Modal
       v-model="showDetailModal"
-      :title="selectedTask?.typeName + '详情'"
+      :title="(selectedTask?.typeName || '任务') + '详情'"
       size="medium"
       :show-footer="false"
     >
@@ -204,15 +243,94 @@
             <span class="detail-label">任务描述</span>
             <span class="detail-value">{{ selectedTask.subtitle }}</span>
           </div>
+
+          <!-- 按任务类型展示对应业务数据，避免详情与业务错位 -->
+          <template v-if="selectedTask.type === 'booking'">
+            <div v-if="selectedTask.extra?.orderNo" class="detail-row">
+              <span class="detail-label">预约单号</span>
+              <span class="detail-value">{{ selectedTask.extra.orderNo }}</span>
+            </div>
+            <div v-if="selectedTask.extra?.tableId" class="detail-row">
+              <span class="detail-label">球桌编号</span>
+              <span class="detail-value">{{ selectedTask.extra.tableId }}号球桌</span>
+            </div>
+            <div v-if="selectedTask.extra?.date" class="detail-row">
+              <span class="detail-label">预约日期</span>
+              <span class="detail-value">{{ selectedTask.extra.date }}</span>
+            </div>
+            <div v-if="selectedTask.extra?.time" class="detail-row">
+              <span class="detail-label">使用时段</span>
+              <span class="detail-value">{{ selectedTask.extra.time }}</span>
+            </div>
+            <div v-if="selectedTask.extra?.duration" class="detail-row">
+              <span class="detail-label">预约时长</span>
+              <span class="detail-value">{{ selectedTask.extra.duration }}小时</span>
+            </div>
+          </template>
+
+          <template v-else-if="selectedTask.type === 'course'">
+            <div v-if="selectedTask.extra?.orderNo" class="detail-row">
+              <span class="detail-label">报名单号</span>
+              <span class="detail-value">{{ selectedTask.extra.orderNo }}</span>
+            </div>
+            <div v-if="selectedTask.extra?.coach" class="detail-row">
+              <span class="detail-label">授课教练</span>
+              <span class="detail-value">{{ selectedTask.extra.coach }}</span>
+            </div>
+            <div v-if="selectedTask.extra?.lessons" class="detail-row">
+              <span class="detail-label">课时</span>
+              <span class="detail-value">{{ selectedTask.extra.lessons }}</span>
+            </div>
+          </template>
+
+          <template v-else-if="selectedTask.type === 'competition'">
+            <div v-if="selectedTask.extra?.regNo" class="detail-row">
+              <span class="detail-label">报名编号</span>
+              <span class="detail-value">{{ selectedTask.extra.regNo }}</span>
+            </div>
+            <div v-if="selectedTask.extra?.playerNo != null" class="detail-row">
+              <span class="detail-label">参赛号码</span>
+              <span class="detail-value">#{{ selectedTask.extra.playerNo }}</span>
+            </div>
+            <div v-if="selectedTask.extra?.date" class="detail-row">
+              <span class="detail-label">比赛日期</span>
+              <span class="detail-value">{{ selectedTask.extra.date }}</span>
+            </div>
+          </template>
+
+          <template v-else-if="selectedTask.type === 'order'">
+            <div v-if="selectedTask.extra?.orderNo" class="detail-row">
+              <span class="detail-label">订单编号</span>
+              <span class="detail-value">{{ selectedTask.extra.orderNo }}</span>
+            </div>
+            <div v-if="selectedTask.extra?.items?.length" class="detail-block">
+              <span class="detail-label">商品清单</span>
+              <div class="order-items">
+                <div v-for="item in selectedTask.extra.items" :key="item.id" class="order-item-row">
+                  <span>{{ item.icon }} {{ item.name }}</span>
+                  <span>x{{ item.qty }}</span>
+                </div>
+              </div>
+            </div>
+            <div v-if="selectedTask.extra?.createTime" class="detail-row">
+              <span class="detail-label">下单时间</span>
+              <span class="detail-value">{{ selectedTask.extra.createTime }}</span>
+            </div>
+          </template>
+
           <div v-if="selectedTask.amount > 0" class="detail-row">
             <span class="detail-label">交易金额</span>
-            <span class="detail-value amount">¥{{ selectedTask.amount.toLocaleString() }}</span>
+            <span class="detail-value amount">¥{{ formatAmount(selectedTask.amount) }}</span>
           </div>
           <div class="detail-row">
             <span class="detail-label">创建时间</span>
             <span class="detail-value">{{ selectedTask.createdAt }}</span>
           </div>
         </div>
+      </div>
+      <div v-else class="detail-gone">
+        <div class="empty-icon">📋</div>
+        <p>该任务不存在或已被处理</p>
       </div>
     </Modal>
 
@@ -241,7 +359,6 @@
 import Modal from '../components/Modal.vue'
 import Toast from '../components/Toast.vue'
 import { logger } from '../utils/api'
-import { authState } from '../utils/auth'
 import { taskStore } from '../utils/taskStore'
 
 export default {
@@ -251,45 +368,42 @@ export default {
     return {
       activeTab: 'pending',
       activeType: 'all',
-      selectedTask: null,
+      // 只保存选中任务的 id，展示内容始终从 store 实时取，杜绝旧快照残留
+      selectedTaskId: null,
       showPayModal: false,
       showCancelModal: false,
+      showConfirmModal: false,
       showDetailModal: false,
       showSuccessModal: false,
-      payLoading: false,
-      cancelLoading: false,
+      actionLoading: false,
+      actionError: '',
       successTitle: '',
       successMessage: '',
       showToast: false,
       toastType: 'success',
       toastTitle: '',
-      toastMessage: '',
-      refreshKey: 0
+      toastMessage: ''
     }
   },
   computed: {
-    paySubtitle() {
-      if (!this.selectedTask || this.selectedTask.amount == null) return ''
-      return '确认支付 ¥' + this.selectedTask.amount.toLocaleString() + ' 元'
-    },
+    // 直接读取 reactive store：业务页新增/支付/取消后，任务中心与角标自动联动
     allTasks() {
-      this.refreshKey
       return taskStore.getAll()
     },
     pendingTasks() {
       return this.allTasks.filter(task => task.status !== 'completed' && task.status !== 'cancelled')
     },
-    completedTasks() {
-      return this.allTasks.filter(task => task.status === 'completed')
+    historyTasks() {
+      return this.allTasks.filter(task => task.status === 'completed' || task.status === 'cancelled')
     },
     pendingCount() {
       return this.pendingTasks.length
     },
-    completedCount() {
-      return this.completedTasks.length
+    historyCount() {
+      return this.historyTasks.length
     },
     currentTabTasks() {
-      return this.activeTab === 'pending' ? this.pendingTasks : this.completedTasks
+      return this.activeTab === 'pending' ? this.pendingTasks : this.historyTasks
     },
     filteredTasks() {
       if (this.activeType === 'all') {
@@ -297,19 +411,31 @@ export default {
       }
       return this.currentTabTasks.filter(task => task.type === this.activeType)
     },
-    isLoggedIn() {
-      return authState.isLoggedIn
+    // 选中任务的实时视图；任务被删除时自动为 null，详情/弹窗不会错位
+    selectedTask() {
+      return this.selectedTaskId ? taskStore.getById(this.selectedTaskId) : null
+    },
+    paySubtitle() {
+      const task = this.selectedTask
+      if (!task || task.amount == null) return ''
+      return '确认支付 ¥' + this.formatAmount(task.amount) + ' 元'
+    },
+    cancelSubtitle() {
+      const task = this.selectedTask
+      if (!task) return '确定要取消此任务吗？'
+      return `确定要取消「${task.title}」吗？取消后可在已完成列表中查看记录。`
     }
   },
   mounted() {
-    this.refreshTasks()
+    // 再次打开任务中心时从存储同步最新数据
+    taskStore.init()
   },
   activated() {
-    this.refreshTasks()
+    taskStore.init()
   },
   methods: {
-    refreshTasks() {
-      this.refreshKey++
+    formatAmount(value) {
+      return Number(value || 0).toLocaleString()
     },
     getTypeText() {
       const typeMap = {
@@ -324,13 +450,15 @@ export default {
       this.activeTab = tab
     },
     handleAction(task, action) {
-      this.selectedTask = { ...task }
-      
+      // 以 id 选中；所有弹窗内容由 selectedTask 计算属性实时派生
+      this.selectedTaskId = task.id
+      this.actionError = ''
+
       if (action.route) {
         this.navigateToRoute(action.route, action.key, task)
         return
       }
-      
+
       const actionMap = {
         pay: () => this.openPayModal(),
         cancel: () => this.openCancelModal(),
@@ -338,7 +466,7 @@ export default {
         remind: () => this.handleRemind(),
         rebook: () => this.navigateToRoute('/tables', 'rebook', task),
         rebuy: () => this.navigateToRoute('/shop', 'rebuy', task),
-        confirm: () => this.handleConfirm(),
+        confirm: () => this.openConfirmModal(),
         review: () => this.handleReview()
       }
       const handler = actionMap[action.key]
@@ -346,7 +474,7 @@ export default {
     },
     navigateToRoute(route, actionKey, task) {
       logger.info('Navigate to business page', { route, actionKey, taskId: task.id, type: task.type })
-      
+
       const query = {}
       if (task.extra) {
         if (task.type === 'booking' && task.extra.tableId) {
@@ -362,74 +490,110 @@ export default {
           query.orderNo = task.extra.orderNo
         }
       }
-      
+
       this.$router.push({ path: route, query })
     },
     openPayModal() {
+      if (!this.selectedTask || this.selectedTask.status !== 'pending_payment') {
+        this.showNotification('warning', '无法支付', '该任务当前状态不可支付')
+        return
+      }
+      this.actionError = ''
       this.showPayModal = true
     },
     openCancelModal() {
+      if (!this.canCancel(this.selectedTask)) {
+        this.showNotification('warning', '无法取消', '该任务当前状态不可取消')
+        return
+      }
+      this.actionError = ''
       this.showCancelModal = true
+    },
+    openConfirmModal() {
+      if (!this.selectedTask || this.selectedTask.status !== 'shipped') {
+        this.showNotification('warning', '无法确认收货', '只有已发货的订单可以确认收货')
+        return
+      }
+      this.actionError = ''
+      this.showConfirmModal = true
     },
     openDetailModal() {
       this.showDetailModal = true
     },
-    async confirmPay() {
-      if (!this.selectedTask) return
-      this.payLoading = true
-      
-      await new Promise(resolve => setTimeout(resolve, 1000))
-      
-      const updatedTask = taskStore.markAsPaid(this.selectedTask.id)
-      
-      this.payLoading = false
-      this.showPayModal = false
-      
-      if (updatedTask) {
-        this.refreshTasks()
-        this.successTitle = '支付成功'
-        this.successMessage = '您的订单已支付成功'
-        this.showSuccessModal = true
-        logger.info('Payment successful', { taskId: this.selectedTask.id, amount: this.selectedTask.amount })
-      } else {
-        this.showNotification('error', '支付失败', '请稍后重试')
+    canCancel(task) {
+      return !!task && ['pending_payment', 'upcoming', 'pending_shipment'].includes(task.status)
+    },
+    /**
+     * 统一执行动作：loading 期间按钮禁用防止重复提交；
+     * 请求失败时弹窗保留、展示错误，任务数据不变；成功后关闭弹窗。
+     */
+    async runAction(action, successNotify) {
+      const task = this.selectedTask
+      if (!task) {
+        this.showNotification('error', '操作失败', '任务不存在或已被处理')
+        return false
+      }
+      if (this.actionLoading) return false
+      this.actionLoading = true
+      this.actionError = ''
+      try {
+        const { task: updated } = await taskStore.executeAction(task.id, action)
+        this.showPayModal = false
+        this.showCancelModal = false
+        this.showConfirmModal = false
+        if (successNotify) {
+          this.successTitle = successNotify.title
+          this.successMessage = successNotify.message
+          this.showSuccessModal = true
+        }
+        logger.info('Task action success', { taskId: task.id, action, status: updated.status })
+        return true
+      } catch (e) {
+        // 失败：保留弹窗与原任务数据，允许重试
+        this.actionError = e.message || '操作失败，请稍后重试'
+        this.showNotification('error', '操作失败', this.actionError)
+        logger.error('Task action failed', { taskId: task.id, action, error: e.message })
+        return false
+      } finally {
+        this.actionLoading = false
       }
     },
-    async confirmCancel() {
-      if (!this.selectedTask) return
-      this.cancelLoading = true
-      
-      await new Promise(resolve => setTimeout(resolve, 800))
-      
-      const result = taskStore.remove(this.selectedTask.id)
-      
-      this.cancelLoading = false
-      this.showCancelModal = false
-      
-      if (result) {
-        this.refreshTasks()
-        this.showNotification('success', '取消成功', '任务已取消')
-        logger.info('Task cancelled', { taskId: this.selectedTask.id })
-      } else {
-        this.showNotification('error', '取消失败', '请稍后重试')
-      }
+    confirmPay() {
+      return this.runAction('pay', { title: '支付成功', message: '您的订单已支付成功' })
+    },
+    confirmCancel() {
+      return this.runAction('cancel').then((ok) => {
+        if (ok) this.showNotification('success', '取消成功', '任务已取消')
+      })
+    },
+    confirmReceive() {
+      return this.runAction('confirm').then((ok) => {
+        if (ok) this.showNotification('success', '确认收货成功', '感谢您的购买')
+      })
     },
     async handleRemind() {
-      if (!this.selectedTask) return
+      const task = this.selectedTask
+      if (!task) return
       this.showNotification('success', '已提醒', '已提醒卖家尽快发货')
-      logger.info('Reminder sent', { taskId: this.selectedTask.id })
-    },
-    handleConfirm() {
-      if (!this.selectedTask) return
-      const result = taskStore.updateStatus(this.selectedTask.id, 'completed')
-      if (result) {
-        this.refreshTasks()
-        this.showNotification('success', '确认收货成功', '感谢您的购买')
-      }
+      logger.info('Reminder sent', { taskId: task.id })
     },
     handleReview() {
       if (!this.selectedTask) return
       this.showNotification('info', '评价功能', '评价功能开发中，敬请期待')
+    },
+    // 弹窗关闭（含遮罩/×/取消）时清理错误与选中态，避免下次打开残留旧内容
+    onActionModalClosed() {
+      if (this.actionLoading) return
+      this.actionError = ''
+    },
+    onPayModalToggle(visible) {
+      if (!visible && !this.actionLoading) this.actionError = ''
+    },
+    onCancelModalToggle(visible) {
+      if (!visible && !this.actionLoading) this.actionError = ''
+    },
+    onConfirmModalToggle(visible) {
+      if (!visible && !this.actionLoading) this.actionError = ''
     },
     showNotification(type, title, message) {
       this.toastType = type
@@ -748,6 +912,27 @@ export default {
   cursor: pointer;
   transition: all 0.3s;
   border: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.action-btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.btn-spinner {
+  width: 14px;
+  height: 14px;
+  border: 2px solid rgba(0, 0, 0, 0.2);
+  border-top-color: currentColor;
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
 }
 
 .action-btn.primary {
@@ -755,7 +940,7 @@ export default {
   color: var(--bg-dark);
 }
 
-.action-btn.primary:hover {
+.action-btn.primary:hover:not(:disabled) {
   transform: translateY(-1px);
   box-shadow: 0 4px 12px var(--primary-glow);
 }
@@ -766,7 +951,7 @@ export default {
   color: var(--text-primary);
 }
 
-.action-btn.default:hover {
+.action-btn.default:hover:not(:disabled) {
   background: rgba(255, 255, 255, 0.1);
   border-color: var(--text-muted);
 }
@@ -777,7 +962,7 @@ export default {
   color: #ff6b6b;
 }
 
-.action-btn.danger:hover {
+.action-btn.danger:hover:not(:disabled) {
   background: rgba(255, 107, 107, 0.2);
 }
 
@@ -813,16 +998,19 @@ export default {
   display: flex;
   justify-content: space-between;
   font-size: 0.9rem;
+  gap: 1rem;
 }
 
 .pay-label,
 .detail-label {
   color: var(--text-secondary);
+  flex-shrink: 0;
 }
 
 .pay-value,
 .detail-value {
   font-weight: 500;
+  text-align: right;
 }
 
 .pay-total {
@@ -838,6 +1026,13 @@ export default {
   font-size: 1.25rem;
   font-weight: 700;
   color: var(--primary);
+}
+
+.action-error {
+  color: #ff6b6b;
+  font-size: 0.85rem;
+  margin-top: 0.25rem;
+  text-align: left;
 }
 
 .detail-content {
@@ -896,9 +1091,37 @@ export default {
   gap: 0.75rem;
 }
 
+.detail-block {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  font-size: 0.9rem;
+}
+
+.order-items {
+  background: rgba(255, 255, 255, 0.03);
+  border-radius: 10px;
+  padding: 0.6rem 0.75rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+
+.order-item-row {
+  display: flex;
+  justify-content: space-between;
+  font-size: 0.85rem;
+}
+
 .detail-value.amount {
   color: var(--primary);
   font-weight: 600;
+}
+
+.detail-gone {
+  text-align: center;
+  padding: 2rem 1rem;
+  color: var(--text-secondary);
 }
 
 @media (max-width: 768px) {

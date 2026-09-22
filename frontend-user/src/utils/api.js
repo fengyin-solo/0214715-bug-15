@@ -185,6 +185,10 @@ async function mockRequest(url, options) {
   if (handler) {
     try {
       const result = await handler(options)
+      // 处理函数可能返回 { success, message } 形式的动作结果：失败时透传错误
+      if (result && typeof result === 'object' && result.success === false) {
+        return { success: false, error: result.message }
+      }
       return { success: true, data: result }
     } catch (error) {
       return { success: false, error: error.message }
@@ -268,28 +272,40 @@ function handleOrders(options) {
  * GET: 返回用户所有任务（整合预约、报名、订单）
  * POST: 执行任务操作（支付、取消等）
  */
-function handleUserTasks(options) {
+async function handleUserTasks(options) {
   // 等待 taskStore 加载完成
   if (!taskStore) {
     return []
   }
-  
+
   if (options.method === 'POST') {
     const body = JSON.parse(options.body || '{}')
-    const { taskId, action } = body
-    logger.info('Task action via API', { taskId, action })
-    
-    if (action === 'pay') {
-      const result = taskStore.markAsPaid(taskId)
-      return { success: !!result, message: result ? '支付成功' : '支付失败' }
-    } else if (action === 'cancel') {
-      const result = taskStore.remove(taskId)
-      return { success: result, message: result ? '取消成功' : '取消失败' }
+    const { taskId, action, taskIds } = body
+    logger.info('Task action via API', { taskId, action, taskIds })
+
+    const toResult = (res) =>
+      res && res.success
+        ? { success: true, message: '操作成功', taskIds: res.taskIds }
+        : { success: false, message: res?.error || '操作失败，请稍后重试' }
+
+    // 批量动作：整组处理，任一失败则全部回滚
+    if (Array.isArray(taskIds)) {
+      const res = await taskStore.executeBatch(taskIds, action).catch((e) => ({ success: false, error: e.message }))
+      return toResult(res)
     }
-    
+
+    if (action === 'pay' || action === 'cancel' || action === 'confirm') {
+      // 统一动作入口：前置校验/重复提交拦截/请求失败不改动数据
+      const res = await taskStore
+        .executeAction(taskId, action)
+        .then(() => ({ success: true }))
+        .catch((e) => ({ success: false, error: e.message }))
+      return toResult(res)
+    }
+
     return { success: true, message: '操作成功' }
   }
-  
+
   // GET 请求，从 taskStore 获取真实数据
   const params = options.params || {}
   if (params.status) {

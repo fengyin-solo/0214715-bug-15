@@ -52,6 +52,7 @@
         </router-link>
         <router-link v-if="isLoggedIn" to="/tasks" class="nav-link">
           <span class="link-text">任务中心</span>
+          <span v-if="pendingTaskCount > 0" class="task-badge">{{ pendingTaskCount > 99 ? '99+' : pendingTaskCount }}</span>
           <span class="link-indicator"></span>
         </router-link>
         
@@ -74,6 +75,8 @@
  * 导航栏组件
  * 响应滚动事件，动态切换样式
  */
+import { taskStore } from '../utils/taskStore'
+
 export default {
   name: 'NavBar',
   props: {
@@ -84,6 +87,12 @@ export default {
   data() {
     return {
       isScrolled: false // 页面是否已滚动
+    }
+  },
+  computed: {
+    // 待处理任务数：直接读取 reactive store，业务页/任务中心操作后全局角标实时联动
+    pendingTaskCount() {
+      return this.isLoggedIn ? taskStore.getPendingCount() : 0
     }
   },
   mounted() {
@@ -195,6 +204,24 @@ export default {
   background: var(--primary);
   border-radius: 2px;
   transition: transform 0.3s;
+}
+
+/* 待处理任务角标 */
+.task-badge {
+  position: absolute;
+  top: 0.35rem;
+  right: 0.25rem;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  background: linear-gradient(135deg, #ff6b6b 0%, #ee5a5a 100%);
+  color: #fff;
+  border-radius: 9px;
+  font-size: 0.65rem;
+  font-weight: 700;
+  line-height: 18px;
+  text-align: center;
+  box-shadow: 0 0 10px rgba(255, 107, 107, 0.5);
 }
 
 .nav-link:hover .link-indicator,
