@@ -169,7 +169,27 @@ export default {
   computed: {
     filteredCompetitions() { return this.competitions.filter(c => c.status === this.activeTab) }
   },
+  mounted() {
+    // 任务中心「查看赛程 / 观看直播 / 查看结果」联动：定位到对应赛事
+    this.applyRouteQuery()
+  },
   methods: {
+    applyRouteQuery() {
+      const { competitionId } = this.$route.query
+      if (competitionId) {
+        const id = Number(competitionId)
+        const comp = this.competitions.find(c => c.id === id)
+        if (comp) {
+          this.activeTab = comp.status
+          this.selectedComp = comp
+          if (comp.status === 'ongoing') {
+            this.showLiveModal = true
+          } else if (comp.status === 'finished') {
+            this.showResultModal = true
+          }
+        }
+      }
+    },
     getCount(status) { return this.competitions.filter(c => c.status === status).length },
     getMonth(date) { return ['1月','2月','3月','4月','5月','6月','7月','8月','9月','10月','11月','12月'][new Date(date).getMonth()] },
     getDay(date) { return new Date(date).getDate() },
@@ -198,6 +218,8 @@ export default {
       }
     },
     async confirmJoin() {
+      // 重复提交保护：请求进行中直接忽略，避免重复报名生成重复任务
+      if (this.joinLoading) return
       this.joinLoading = true
       await new Promise(resolve => setTimeout(resolve, 1500))
       const regInfo = { 
@@ -207,13 +229,17 @@ export default {
       this.joinResult = { ...regInfo, compName: this.selectedComp.name }
       
       // 添加到任务中心
-      taskStore.addCompetitionTask(this.selectedComp, regInfo)
-      
+      const task = taskStore.addCompetitionTask(this.selectedComp, regInfo)
+
       this.joinLoading = false
       this.showJoinModal = false
       this.showSuccessModal = true
-      
-      this.showNotification('info', '已添加到任务中心', `您可以在任务中心查看并管理此赛事`)
+
+      if (task) {
+        this.showNotification('info', '已添加到任务中心', `您可以在任务中心查看并管理此赛事`)
+      } else {
+        this.showNotification('error', '任务保存失败', '报名已提交，但任务中心保存失败，请稍后重试')
+      }
     },
     viewJoinDetail() {
       this.showSuccessModal = false

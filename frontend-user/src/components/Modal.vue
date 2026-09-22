@@ -55,7 +55,7 @@
               <button v-if="showCancel" class="btn-cancel" @click="close">
                 {{ cancelText }}
               </button>
-              <button class="btn-confirm" :class="confirmType" :disabled="confirmDisabled" @click="confirm">
+              <button class="btn-confirm" :class="confirmType" :disabled="confirmDisabled || loading" @click="confirm">
                 <span v-if="loading" class="btn-loading"></span>
                 <span>{{ confirmText }}</span>
               </button>

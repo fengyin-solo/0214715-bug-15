@@ -324,7 +324,22 @@ export default {
   },
   computed: {
   },
+  mounted() {
+    // 任务中心「查看详情 / 继续学习」联动：定位到对应课程
+    this.applyRouteQuery()
+  },
   methods: {
+    applyRouteQuery() {
+      const { courseId } = this.$route.query
+      if (courseId) {
+        const id = Number(courseId)
+        const course = this.courses.find(c => c.id === id)
+        if (course) {
+          this.selectedCourse = course
+          this.showDetailModal = true
+        }
+      }
+    },
     openCourseDetail(course) {
       this.selectedCourse = course
       this.showDetailModal = true
@@ -349,6 +364,8 @@ export default {
       }
     },
     async confirmEnroll() {
+      // 重复提交保护：请求进行中直接忽略，避免重复报名生成重复任务
+      if (this.enrollLoading) return
       this.enrollLoading = true
       
       await new Promise(resolve => setTimeout(resolve, 1500))
@@ -374,13 +391,17 @@ export default {
       
       // 添加到任务中心
       const enrollInfo = { orderNo }
-      taskStore.addCourseTask(this.enrollCourse, enrollInfo)
-      
+      const task = taskStore.addCourseTask(this.enrollCourse, enrollInfo)
+
       this.enrollLoading = false
       this.showEnrollModal = false
       this.showSuccessModal = true
-      
-      this.showNotification('info', '已添加到任务中心', `您可以在任务中心查看并管理此课程`)
+
+      if (task) {
+        this.showNotification('info', '已添加到任务中心', `您可以在任务中心查看并管理此课程`)
+      } else {
+        this.showNotification('error', '任务保存失败', '报名已提交，但任务中心保存失败，请稍后重试')
+      }
     },
     goToMyCourses() {
       this.showSuccessModal = false

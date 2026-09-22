@@ -46,7 +46,6 @@
           <span v-if="completedCount > 0" class="tab-badge">{{ completedCount }}</span>
         </button>
       </div>
-
       <div class="type-filters">
         <button
           class="filter-btn"
@@ -81,7 +80,7 @@
         v-for="task in filteredTasks"
         :key="task.id"
         class="task-card"
-        :class="[task.statusType, task.type]"
+        :class="[task.statusType, task.type, { cancelled: task.status === 'cancelled' }]"
       >
         <div class="task-header">
           <div class="task-type">
@@ -116,6 +115,7 @@
             :key="action.key"
             class="action-btn"
             :class="action.type"
+            :disabled="isBusy(task.id)"
             @click="handleAction(task, action)"
           >
             {{ action.label }}
@@ -127,7 +127,7 @@
       <div v-else class="empty-state">
       <div class="empty-icon">📋</div>
       <h3>暂无{{ activeTab === 'pending' ? '待处理' : '已完成' }}任务</h3>
-      <p>{{ activeType === 'all' ? '当前没有' : getTypeText }}记录</p>
+      <p>{{ activeType === 'all' ? '当前没有相关' + (activeTab === 'pending' ? '待处理' : '已完成') : getTypeText }}记录</p>
       </div>
     </div>
 
@@ -200,6 +200,14 @@
             <span class="detail-label">任务类型</span>
             <span class="detail-value">{{ selectedTask.typeName }}</span>
           </div>
+          <div
+            v-for="row in detailExtraRows"
+            :key="row.label"
+            class="detail-row"
+          >
+            <span class="detail-label">{{ row.label }}</span>
+            <span class="detail-value">{{ row.value }}</span>
+          </div>
           <div class="detail-row">
             <span class="detail-label">任务描述</span>
             <span class="detail-value">{{ selectedTask.subtitle }}</span>
@@ -251,20 +259,22 @@ export default {
     return {
       activeTab: 'pending',
       activeType: 'all',
-      selectedTask: null,
+      // 只保存任务 id；弹窗内容始终从 store 实时派生，避免操作后残留旧快照
+      selectedTaskId: null,
       showPayModal: false,
       showCancelModal: false,
       showDetailModal: false,
       showSuccessModal: false,
       payLoading: false,
       cancelLoading: false,
+      // 任务级操作锁：防止重复点击造成重复支付/取消/确认收货
+      busyTaskIds: [],
       successTitle: '',
       successMessage: '',
       showToast: false,
       toastType: 'success',
       toastTitle: '',
-      toastMessage: '',
-      refreshKey: 0
+      toastMessage: ''
     }
   },
   computed: {
@@ -272,15 +282,16 @@ export default {
       if (!this.selectedTask || this.selectedTask.amount == null) return ''
       return '确认支付 ¥' + this.selectedTask.amount.toLocaleString() + ' 元'
     },
+    // 直接读取 store 的响应式内存数据源，任何页面的变更都会实时联动
     allTasks() {
-      this.refreshKey
       return taskStore.getAll()
     },
     pendingTasks() {
       return this.allTasks.filter(task => task.status !== 'completed' && task.status !== 'cancelled')
     },
+    // 已完成分组包含「已完成」和「已取消」
     completedTasks() {
-      return this.allTasks.filter(task => task.status === 'completed')
+      return this.allTasks.filter(task => task.status === 'completed' || task.status === 'cancelled')
     },
     pendingCount() {
       return this.pendingTasks.length
@@ -297,19 +308,105 @@ export default {
       }
       return this.currentTabTasks.filter(task => task.type === this.activeType)
     },
+    selectedTask() {
+      if (!this.selectedTaskId) return null
+      return taskStore.getById(this.selectedTaskId)
+    },
+    /**
+     * 详情弹窗中按任务类型展示对应的业务数据，
+     * 保证任务动作/金额/类型与业务数据对应
+     */
+    detailExtraRows() {
+      const task = this.selectedTask
+      if (!task || !task.extra) return []
+      const extra = task.extra
+      switch (task.type) {
+        case 'booking':
+          return [
+            extra.orderNo ? { label: '预约编号', value: extra.orderNo } : null,
+            extra.tableId ? { label: '球桌编号', value: extra.tableId + '号球桌' } : null,
+            extra.date ? { label: '预约日期', value: extra.date } : null,
+            extra.time ? { label: '预约时段', value: extra.time } : null,
+            extra.duration ? { label: '预约时长', value: extra.duration + '小时' } : null
+          ].filter(Boolean)
+        case 'course':
+          return [
+            extra.orderNo ? { label: '报名编号', value: extra.orderNo } : null,
+            extra.courseId ? { label: '课程编号', value: 'C' + String(extra.courseId).padStart(3, '0') } : null,
+            extra.coach ? { label: '授课教练', value: extra.coach } : null,
+            extra.lessons ? { label: '课程课时', value: extra.lessons } : null
+          ].filter(Boolean)
+        case 'competition':
+          return [
+            extra.regNo ? { label: '报名编号', value: extra.regNo } : null,
+            extra.playerNo != null ? { label: '参赛号码', value: '#' + extra.playerNo } : null,
+            extra.date ? { label: '比赛日期', value: extra.date } : null
+          ].filter(Boolean)
+        case 'order':
+          return [
+            extra.orderNo ? { label: '订单编号', value: extra.orderNo } : null,
+            extra.createTime ? { label: '下单时间', value: extra.createTime } : null,
+            Array.isArray(extra.items)
+              ? { label: '商品明细', value: extra.items.map(i => `${i.name} x${i.qty}`).join('、') }
+              : null
+          ].filter(Boolean)
+        default:
+          return []
+      }
+    },
     isLoggedIn() {
       return authState.isLoggedIn
     }
   },
+  watch: {
+    // 当前选中任务从待处理列表消失（支付/取消后），自动关闭依赖它的弹窗，
+    // 防止旧结果残留或列表与详情错位
+    selectedTask(task) {
+      if (!task) {
+        this.showPayModal = false
+        this.showCancelModal = false
+      }
+    }
+  },
   mounted() {
-    this.refreshTasks()
+    // 再次打开任务中心时若当前筛选分组已空，自动切到有数据的分组
+    this.normalizeActiveTab()
   },
   activated() {
-    this.refreshTasks()
+    this.normalizeActiveTab()
+  },
+  beforeUnmount() {
+    // 离开任务中心时清理所有临时 UI 状态，避免再次进入时残留旧弹窗/旧提示
+    this.resetTransientState()
   },
   methods: {
-    refreshTasks() {
-      this.refreshKey++
+    normalizeActiveTab() {
+      if (this.activeTab === 'pending' && this.pendingCount === 0 && this.completedCount > 0) {
+        this.activeTab = 'completed'
+      } else if (this.activeTab === 'completed' && this.completedCount === 0 && this.pendingCount > 0) {
+        this.activeTab = 'pending'
+      }
+    },
+    resetTransientState() {
+      this.selectedTaskId = null
+      this.showPayModal = false
+      this.showCancelModal = false
+      this.showDetailModal = false
+      this.showSuccessModal = false
+      this.payLoading = false
+      this.cancelLoading = false
+      this.busyTaskIds = []
+      this.showToast = false
+    },
+    isBusy(taskId) {
+      return this.busyTaskIds.includes(taskId)
+    },
+    markBusy(taskId, busy) {
+      if (busy) {
+        if (!this.busyTaskIds.includes(taskId)) this.busyTaskIds.push(taskId)
+      } else {
+        this.busyTaskIds = this.busyTaskIds.filter(id => id !== taskId)
+      }
     },
     getTypeText() {
       const typeMap = {
@@ -324,30 +421,44 @@ export default {
       this.activeTab = tab
     },
     handleAction(task, action) {
-      this.selectedTask = { ...task }
-      
-      if (action.route) {
-        this.navigateToRoute(action.route, action.key, task)
+      // 该任务已有操作在途时忽略重复点击（重复操作保护）
+      if (this.isBusy(task.id)) return
+
+      // 重新取最新任务，避免用渲染时的旧对象操作
+      const freshTask = taskStore.getById(task.id)
+      if (!freshTask) {
+        this.showNotification('error', '任务不存在', '该任务可能已被处理，请刷新列表')
         return
       }
-      
+      // 动作与当前状态不匹配（例如卡片渲染后状态已被其他流程改变）时直接忽略
+      if (!freshTask.actions.some(a => a.key === action.key)) {
+        this.showNotification('warning', '操作不可用', '任务状态已变化，请刷新后重试')
+        return
+      }
+
+      this.selectedTaskId = task.id
+
+      // 支付/取消/确认收货均在任务中心内完成，不再跳转业务页，
+      // 避免离开后流程残留以及业务页重复创建任务
       const actionMap = {
         pay: () => this.openPayModal(),
         cancel: () => this.openCancelModal(),
         view: () => this.openDetailModal(),
         remind: () => this.handleRemind(),
-        rebook: () => this.navigateToRoute('/tables', 'rebook', task),
-        rebuy: () => this.navigateToRoute('/shop', 'rebuy', task),
         confirm: () => this.handleConfirm(),
         review: () => this.handleReview()
+      }
+      if (action.route) {
+        this.navigateToRoute(action.route, freshTask, action.key)
+        return
       }
       const handler = actionMap[action.key]
       if (handler) handler()
     },
-    navigateToRoute(route, actionKey, task) {
+    navigateToRoute(route, task, actionKey) {
       logger.info('Navigate to business page', { route, actionKey, taskId: task.id, type: task.type })
-      
-      const query = {}
+
+      const query = { action: actionKey }
       if (task.extra) {
         if (task.type === 'booking' && task.extra.tableId) {
           query.tableId = task.extra.tableId
@@ -362,7 +473,10 @@ export default {
           query.orderNo = task.extra.orderNo
         }
       }
-      
+
+      // 离开任务中心前清掉弹窗/选择，保证回来是干净状态
+      this.showDetailModal = false
+      this.selectedTaskId = null
       this.$router.push({ path: route, query })
     },
     openPayModal() {
@@ -375,60 +489,131 @@ export default {
       this.showDetailModal = true
     },
     async confirmPay() {
-      if (!this.selectedTask) return
+      const taskId = this.selectedTaskId
+      // 重复操作保护：加载中 / 任务级锁未释放时直接忽略
+      if (this.payLoading || !taskId || this.isBusy(taskId)) return
+
+      const task = taskStore.getById(taskId)
+      if (!task) {
+        this.showPayModal = false
+        this.showNotification('error', '支付失败', '任务不存在或已被处理')
+        return
+      }
+      // 状态机前置校验：只有待付款任务可支付
+      if (task.status !== 'pending_payment') {
+        this.showPayModal = false
+        this.showNotification('warning', '无需重复支付', '该任务已处理，状态为「' + task.statusText + '」')
+        return
+      }
+
       this.payLoading = true
-      
-      await new Promise(resolve => setTimeout(resolve, 1000))
-      
-      const updatedTask = taskStore.markAsPaid(this.selectedTask.id)
-      
-      this.payLoading = false
-      this.showPayModal = false
-      
-      if (updatedTask) {
-        this.refreshTasks()
-        this.successTitle = '支付成功'
-        this.successMessage = '您的订单已支付成功'
-        this.showSuccessModal = true
-        logger.info('Payment successful', { taskId: this.selectedTask.id, amount: this.selectedTask.amount })
-      } else {
-        this.showNotification('error', '支付失败', '请稍后重试')
+      this.markBusy(taskId, true)
+
+      try {
+        // 模拟支付网络请求
+        await new Promise(resolve => setTimeout(resolve, 300))
+        const updatedTask = taskStore.markAsPaid(taskId)
+
+        if (updatedTask) {
+          this.showPayModal = false
+          this.successTitle = '支付成功'
+          this.successMessage = '您的订单已支付成功'
+          this.showSuccessModal = true
+          logger.info('Payment successful', { taskId, amount: updatedTask.amount, type: updatedTask.type })
+        } else {
+          // 请求失败（含持久化失败/状态已变更）：弹窗保留供重试，不清空数据
+          this.showNotification('error', '支付失败', '网络异常，请稍后重试')
+          logger.warn('Payment failed', { taskId })
+        }
+      } catch (e) {
+        this.showNotification('error', '支付失败', '网络异常，请稍后重试')
+        logger.error('Payment error', e)
+      } finally {
+        this.payLoading = false
+        this.markBusy(taskId, false)
       }
     },
     async confirmCancel() {
-      if (!this.selectedTask) return
+      const taskId = this.selectedTaskId
+      if (this.cancelLoading || !taskId || this.isBusy(taskId)) return
+
+      const task = taskStore.getById(taskId)
+      if (!task) {
+        this.showCancelModal = false
+        this.showNotification('error', '取消失败', '任务不存在或已被处理')
+        return
+      }
+      if (task.status !== 'pending_payment') {
+        this.showCancelModal = false
+        this.showNotification('warning', '任务已处理', '当前状态为「' + task.statusText + '」，无需取消')
+        return
+      }
+
       this.cancelLoading = true
-      
-      await new Promise(resolve => setTimeout(resolve, 800))
-      
-      const result = taskStore.remove(this.selectedTask.id)
-      
-      this.cancelLoading = false
-      this.showCancelModal = false
-      
-      if (result) {
-        this.refreshTasks()
-        this.showNotification('success', '取消成功', '任务已取消')
-        logger.info('Task cancelled', { taskId: this.selectedTask.id })
-      } else {
-        this.showNotification('error', '取消失败', '请稍后重试')
+      this.markBusy(taskId, true)
+
+      try {
+        await new Promise(resolve => setTimeout(resolve, 300))
+        const updatedTask = taskStore.cancelTask(taskId)
+
+        if (updatedTask) {
+          this.showCancelModal = false
+          this.showNotification('success', '取消成功', '任务已取消')
+          logger.info('Task cancelled', { taskId })
+        } else {
+          this.showNotification('error', '取消失败', '网络异常，请稍后重试')
+          logger.warn('Cancel failed', { taskId })
+        }
+      } catch (e) {
+        this.showNotification('error', '取消失败', '网络异常，请稍后重试')
+        logger.error('Cancel error', e)
+      } finally {
+        this.cancelLoading = false
+        this.markBusy(taskId, false)
       }
     },
     async handleRemind() {
-      if (!this.selectedTask) return
+      const taskId = this.selectedTaskId
+      if (!taskId || this.isBusy(taskId)) return
+      const task = taskStore.getById(taskId)
+      if (!task || task.status !== 'pending_shipment') {
+        this.showNotification('warning', '操作不可用', '任务状态已变化')
+        return
+      }
       this.showNotification('success', '已提醒', '已提醒卖家尽快发货')
-      logger.info('Reminder sent', { taskId: this.selectedTask.id })
+      logger.info('Reminder sent', { taskId })
     },
-    handleConfirm() {
-      if (!this.selectedTask) return
-      const result = taskStore.updateStatus(this.selectedTask.id, 'completed')
-      if (result) {
-        this.refreshTasks()
-        this.showNotification('success', '确认收货成功', '感谢您的购买')
+    async handleConfirm() {
+      const taskId = this.selectedTaskId
+      if (!taskId || this.isBusy(taskId)) return
+
+      const task = taskStore.getById(taskId)
+      if (!task) {
+        this.showNotification('error', '操作失败', '任务不存在或已被处理')
+        return
+      }
+      // 只有已发货的商城订单可以确认收货，防止误操作与跨类型错位
+      if (task.type !== 'order' || task.status !== 'shipped') {
+        this.showNotification('warning', '操作不可用', '当前状态为「' + task.statusText + '」，暂不能确认收货')
+        return
+      }
+
+      this.markBusy(taskId, true)
+      try {
+        const result = taskStore.confirmReceipt(taskId)
+        if (result) {
+          this.showNotification('success', '确认收货成功', '感谢您的购买')
+          logger.info('Receipt confirmed', { taskId })
+        } else {
+          this.showNotification('error', '操作失败', '请稍后重试')
+        }
+      } finally {
+        this.markBusy(taskId, false)
       }
     },
     handleReview() {
-      if (!this.selectedTask) return
+      const taskId = this.selectedTaskId
+      if (!taskId) return
       this.showNotification('info', '评价功能', '评价功能开发中，敬请期待')
     },
     showNotification(type, title, message) {
@@ -642,6 +827,15 @@ export default {
   opacity: 0.9;
 }
 
+.task-card.cancelled {
+  opacity: 0.65;
+}
+
+.task-card.cancelled .task-title,
+.task-card.cancelled .task-amount {
+  text-decoration: line-through;
+}
+
 .task-header {
   display: flex;
   justify-content: space-between;
@@ -779,6 +973,13 @@ export default {
 
 .action-btn.danger:hover {
   background: rgba(255, 107, 107, 0.2);
+}
+
+.action-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+  transform: none;
+  box-shadow: none;
 }
 
 .empty-state {

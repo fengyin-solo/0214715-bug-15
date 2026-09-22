@@ -154,10 +154,10 @@
     <Modal v-model="showOrdersModal" title="我的订单" size="medium" :show-footer="false">
       <div class="orders-content">
         <div v-if="orders.length > 0" class="orders-list">
-          <div v-for="order in orders" :key="order.orderNo" class="order-card">
+          <div v-for="order in orders" :key="order.orderNo" class="order-card" :class="{ highlighted: order.orderNo === highlightOrderNo }">
             <div class="order-header">
               <span class="order-no">{{ order.orderNo }}</span>
-              <span class="order-status paid">已支付</span>
+              <span class="order-status" :class="orderStatusClass(order.status)">{{ orderStatusText(order.status) }}</span>
             </div>
             <div class="order-items">
               <div v-for="item in order.items" :key="item.id" class="order-item">
@@ -210,6 +210,7 @@ export default {
       orderResult: null,
       orders: [], // 订单列表
       showOrdersModal: false, // 订单列表弹框
+      highlightOrderNo: null, // 任务中心联动时高亮的订单号
       showToast: false,
       toastType: 'success',
       toastTitle: '',
@@ -250,13 +251,59 @@ export default {
     cartTotal() { return this.cart.reduce((sum, item) => sum + item.price * item.qty, 0) },
     cartItemCount() { return this.cart.reduce((sum, item) => sum + item.qty, 0) }
   },
+  mounted() {
+    // 任务中心「查看订单/物流、再次购买」联动
+    this.applyRouteQuery()
+  },
   methods: {
+    applyRouteQuery() {
+      const { orderNo, action } = this.$route.query
+      if (action === 'rebuy' && orderNo) {
+        // 从任务中心找到该订单，把商品重新加入购物车
+        const task = taskStore.getAll().find(t => t.type === 'order' && t.extra?.orderNo === orderNo)
+        const items = task?.extra?.items
+        if (Array.isArray(items) && items.length > 0) {
+          items.forEach(item => {
+            const product = this.products.find(p => p.id === item.id)
+            if (product) this.addToCart(product, item.qty || 1)
+          })
+          this.showCartModal = true
+        }
+        return
+      }
+      if (action === 'view' && orderNo) {
+        const task = taskStore.getAll().find(t => t.type === 'order' && t.extra?.orderNo === orderNo)
+        if (task) {
+          this.highlightOrderNo = orderNo
+          this.orders = [{
+            orderNo: task.extra.orderNo,
+            amount: task.amount,
+            items: task.extra.items || [],
+            createTime: task.extra.createTime || task.createdAt,
+            status: task.status
+          }]
+          this.showOrdersModal = true
+        }
+      }
+    },
     getCategoryCount(catId) {
       if (catId === 'all') return this.products.length
       return this.products.filter(p => p.category === catId).length
     },
     getCategoryName(catId) {
       return this.categories.find(c => c.id === catId)?.name || ''
+    },
+    orderStatusText(status) {
+      return {
+        paid: '已支付',
+        pending_shipment: '待发货',
+        shipped: '已发货',
+        completed: '已完成',
+        cancelled: '已取消'
+      }[status] || '已支付'
+    },
+    orderStatusClass(status) {
+      return status === 'completed' || status === 'cancelled' ? 'finished' : 'paid'
     },
     openProductDetail(product) {
       this.selectedProduct = product
@@ -321,6 +368,8 @@ export default {
       this.showCheckoutModal = true
     },
     async confirmCheckout() {
+      // 重复提交保护 + 空购物车保护，避免重复下单生成重复任务
+      if (this.checkoutLoading || this.cart.length === 0) return undefined
       this.checkoutLoading = true
       await new Promise(resolve => setTimeout(resolve, 1500))
       const order = {
@@ -335,13 +384,17 @@ export default {
       this.cart = []
       
       // 添加到任务中心
-      taskStore.addOrderTask(order)
-      
+      const task = taskStore.addOrderTask(order)
+
       this.checkoutLoading = false
       this.showCheckoutModal = false
       this.showSuccessModal = true
-      
-      this.showNotification('info', '已添加到任务中心', `您可以在任务中心查看并管理此订单`)
+
+      if (task) {
+        this.showNotification('info', '已添加到任务中心', `您可以在任务中心查看并管理此订单`)
+      } else {
+        this.showNotification('error', '任务保存失败', '订单已提交，但任务中心保存失败，请稍后重试')
+      }
     },
     showNotification(type, title, message) {
       this.toastType = type
@@ -471,10 +524,12 @@ export default {
 .orders-content { margin: -20px -24px; }
 .orders-list { max-height: 400px; overflow-y: auto; padding: 1rem 1.5rem; }
 .order-card { background: rgba(255, 255, 255, 0.03); border-radius: 12px; padding: 1rem; margin-bottom: 0.75rem; }
+.order-card.highlighted { border: 1px solid var(--primary); box-shadow: 0 0 20px var(--primary-glow); }
 .order-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.75rem; }
 .order-no { font-family: monospace; font-size: 0.85rem; color: var(--text-secondary); }
 .order-status { padding: 0.25rem 0.6rem; border-radius: 12px; font-size: 0.7rem; font-weight: 600; }
 .order-status.paid { background: rgba(0, 217, 165, 0.15); color: var(--primary); }
+.order-status.finished { background: rgba(108, 117, 125, 0.15); color: #6c757d; }
 .order-items { display: flex; flex-wrap: wrap; gap: 0.5rem; margin-bottom: 0.75rem; }
 .order-item { display: flex; align-items: center; gap: 0.4rem; background: rgba(255, 255, 255, 0.05); padding: 0.4rem 0.6rem; border-radius: 8px; font-size: 0.8rem; }
 .item-icon { font-size: 1rem; }

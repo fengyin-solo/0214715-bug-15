@@ -277,7 +277,29 @@ export default {
       this.loadTablesForDate()
     }
   },
+  mounted() {
+    // 任务中心「查看详情 / 再次预约」联动：定位到对应球桌
+    this.applyRouteQuery()
+  },
   methods: {
+    applyRouteQuery() {
+      const { tableId, action, date } = this.$route.query
+      if (tableId) {
+        const id = Number(tableId)
+        const table = this.tables.find(t => t.id === id)
+        if (table) {
+          // 同步类型筛选，保证目标球桌一定在当前列表中
+          this.selectedType = table.typeId
+          if (date && typeof date === 'string') {
+            this.selectedDate = date
+            this.bookingDate = date
+          }
+          if (action === 'rebook' && table.available) {
+            this.openBooking(table)
+          }
+        }
+      }
+    },
     async loadTablesForDate() {
       this.isLoadingTables = true
       // 模拟API请求延迟
@@ -313,6 +335,8 @@ export default {
       }
     },
     async confirmBooking() {
+      // 重复提交保护：请求进行中直接忽略，避免整组重复创建任务
+      if (this.bookingLoading) return
       this.bookingLoading = true
       
       // Simulate API call
@@ -335,13 +359,17 @@ export default {
         time: slot.time,
         duration: this.duration
       }
-      taskStore.addBookingTask(this.selectedTable, bookingInfo)
-      
+      const task = taskStore.addBookingTask(this.selectedTable, bookingInfo)
+
       this.bookingLoading = false
       this.showBookingModal = false
       this.showSuccessModal = true
-      
-      this.showNotification('info', '已添加到任务中心', `您可以在任务中心查看并管理此预约`)
+
+      if (task) {
+        this.showNotification('info', '已添加到任务中心', `您可以在任务中心查看并管理此预约`)
+      } else {
+        this.showNotification('error', '任务保存失败', '预约已提交，但任务中心保存失败，请稍后重试')
+      }
     },
     showNotification(type, title, message) {
       this.toastType = type
